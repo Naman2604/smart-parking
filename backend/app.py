@@ -11,10 +11,22 @@ Run locally:      python app.py
 Run in production: gunicorn app:app --workers 1 --threads 16 --timeout 120
 (keep --workers at 1: the detector and its stats live inside one process)
 """
-import logging
 import os
+
+# A small/free server gets a tiny slice of ONE cpu core, but the container often
+# still *reports* many cores. Libraries then start one thread per reported core and
+# fight over that slice, which can make startup crawl or appear to hang. Keep them
+# to one thread. This must run before those libraries are imported. Set the variables
+# yourself (e.g. OMP_NUM_THREADS=4) on a bigger machine to override.
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+             "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
+import logging
+import sys
 import threading
 import time
+import traceback
 
 import cv2
 from flask import Flask, Response, jsonify, request
@@ -24,6 +36,9 @@ from analytics import (HISTORY_MAX_POINTS, get_history, get_insights, get_slots,
                        get_stats, set_zones, update_stats)
 from detection import BASE_DIR, ParkingDetector
 
+cv2.setNumThreads(int(os.getenv("CV_THREADS", "1")))
+START_TIME = time.time()
+
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("parking.app")
@@ -32,6 +47,32 @@ VIDEO_PATH = os.getenv("VIDEO_PATH", str(BASE_DIR / "parking.mp4"))
 STREAM_FPS = float(os.getenv("STREAM_FPS", "15"))            # frames sent to browsers per second
 DETECT_INTERVAL = float(os.getenv("DETECT_INTERVAL", "0.3"))  # seconds between YOLO runs
 JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "70"))
+# If a startup stage takes longer than this, record where the thread is stuck so
+# /health can show it (useful when you can't read the server's logs).
+STUCK_AFTER = float(os.getenv("STUCK_AFTER", "60"))
+
+
+def cpu_report():
+    """What the container says about CPUs, and the real quota if there is one."""
+    info = {"cpus_visible": os.cpu_count()}
+    try:
+        info["cpus_usable"] = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        pass
+    for path, parse in (
+        ("/sys/fs/cgroup/cpu.max", lambda t: None if t.split()[0] == "max"
+         else round(int(t.split()[0]) / int(t.split()[1]), 3)),
+        ("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", None),
+    ):
+        try:
+            with open(path) as fh:
+                text = fh.read().strip()
+            if parse:
+                info["cpu_quota_cores"] = parse(text)
+            break
+        except (OSError, ValueError, IndexError, ZeroDivisionError):
+            continue
+    return info
 
 
 class FrameProducer(threading.Thread):
@@ -47,8 +88,29 @@ class FrameProducer(threading.Thread):
         self.last_error = None
         self.detections_run = 0
         self.slot_count = 0
-        self.stage = "starting"      # starting -> loading_model -> opening_video -> running
+        # starting -> loading_model -> warming_up -> opening_video -> running
+        self.stage = "starting"
+        self.stage_since = time.time()
+        self.stuck_trace = None      # filled in by the watchdog if a stage takes too long
+        self.restarts = 0
         self._detector = None
+
+    def _set_stage(self, stage):
+        self.stage = stage
+        self.stage_since = time.time()
+        self.stuck_trace = None
+        log.info("stage -> %s (%.1fs after start)", stage, time.time() - START_TIME)
+
+    def stage_seconds(self):
+        return time.time() - self.stage_since
+
+    def capture_stack(self):
+        """Where is this thread right now? Used when a stage takes too long."""
+        frame = sys._current_frames().get(self.ident)
+        if frame is None:
+            return None
+        lines = traceback.format_stack(frame)
+        return [ln.strip() for ln in lines[-6:]]
 
     # ── used by the Flask routes ─────────────────────────────────────────
     def wait_for_frame(self, last_id, timeout=10):
@@ -71,26 +133,29 @@ class FrameProducer(threading.Thread):
             except Exception as exc:            # noqa: BLE001
                 self.last_error = repr(exc)
                 self.video_open = False
-                self.stage = "error"
+                self.restarts += 1
+                self._set_stage("error")
                 log.exception("Frame producer stopped; restarting in 3s")
                 time.sleep(3)
 
     def _run_once(self):
         if self._detector is None:          # load the model once, not on every retry
-            self.stage = "loading_model"
+            self._set_stage("loading_model")
             t0 = time.monotonic()
             self._detector = ParkingDetector()
+            log.info("Model loaded in %.1fs", time.monotonic() - t0)
+            self._set_stage("warming_up")
             self._detector.warmup()
             log.info("Model ready in %.1fs", time.monotonic() - t0)
         detector = self._detector
         self.slot_count = len(detector.slots)
         set_zones(detector.zones, detector.zone_order)
-        self.stage = "opening_video"
+        self._set_stage("opening_video")
         cap = cv2.VideoCapture(VIDEO_PATH)
         if not cap.isOpened():
             raise RuntimeError(f"Cannot open video: {VIDEO_PATH}")
         self.video_open = True
-        self.stage = "running"
+        self._set_stage("running")
         self.last_error = None
 
         src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -154,6 +219,25 @@ producer = FrameProducer()
 producer.start()
 
 
+def _watchdog():
+    """
+    If startup stalls, record where the worker thread is stuck so it shows up in
+    /health. Free hosting often gives no log access, so the page has to explain itself.
+    """
+    while True:
+        time.sleep(5)
+        if producer.stage not in ("running", "error") and producer.stage_seconds() > STUCK_AFTER:
+            if producer.stuck_trace is None:
+                producer.stuck_trace = producer.capture_stack()
+                log.warning("Still in stage '%s' after %.0fs. Thread is here:\n%s",
+                            producer.stage, producer.stage_seconds(),
+                            "\n".join(producer.stuck_trace or ["(stack unavailable)"]))
+
+
+threading.Thread(target=_watchdog, daemon=True, name="watchdog").start()
+log.info("Startup: %s", cpu_report())
+
+
 @app.after_request
 def no_cache(resp):
     resp.headers["Cache-Control"] = "no-store"
@@ -213,6 +297,12 @@ def health():
     ok = producer.is_alive() and producer.video_open and age is not None and age < 10
     return jsonify(status="ok" if ok else "starting_or_degraded",
                    stage=producer.stage,
+                   stage_seconds=round(producer.stage_seconds(), 1),
+                   uptime_seconds=round(time.time() - START_TIME, 1),
+                   stuck=producer.stuck_trace is not None,
+                   stuck_trace=producer.stuck_trace,
+                   restarts=producer.restarts,
+                   cpu=cpu_report(),
                    video_open=producer.video_open,
                    seconds_since_last_frame=age,
                    detections_run=producer.detections_run,

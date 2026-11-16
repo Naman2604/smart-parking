@@ -64,13 +64,24 @@ Open http://localhost:3000
    | Root Directory   | `backend`                                                      |
    | Runtime          | Python 3                                                       |
    | Build Command    | `pip install -r requirements.txt`                              |
-   | Start Command    | `gunicorn app:app --workers 1 --threads 16 --timeout 120`      |
+   | Start Command    | `gunicorn app:app --workers 1 --threads 16 --timeout 120 --bind 0.0.0.0:$PORT` |
    | Instance Type    | Free                                                           |
    | Health Check Path| `/health` (under Advanced)                                     |
 
 3. Click **Create Web Service**. The first build takes a few minutes.
 4. When it says "Live", open  https://YOUR-SERVICE.onrender.com/health
-   Wait (free instances start slowly) until you see  "status": "ok"  and  "slots_loaded": 32.
+
+   IMPORTANT - how to read this page. A free Render instance goes to sleep when nobody uses it.
+   Opening /health wakes it, and the page answers *while the app is still starting*, so the FIRST
+   thing you see is almost always:
+       "stage":"loading_model", "slots_loaded":0, "detections_run":0
+   That is normal. **Wait ~15 seconds and refresh.** Look at these two numbers:
+
+   - `uptime_seconds` small (0-20) -> the app just woke up. Keep refreshing; it should reach
+     "stage":"running", "status":"ok", "slots_loaded":32 within a few seconds.
+   - `stage_seconds` large (60+) and `"stuck":true` -> it really is stuck. The page then also
+     contains `stuck_trace`, which says exactly which line it stopped on. Copy the whole page
+     and send it to me - that tells me the cause without needing the Render logs.
 5. Copy your service URL (https://YOUR-SERVICE.onrender.com) - you need it in Step 5.
 
 If the build fails with a Python/numpy/onnxruntime error: Render -> your service -> **Environment** ->
@@ -99,10 +110,11 @@ Open  https://YOUR-SERVICE.onrender.com/health  first:
 | What you see                                   | Meaning / fix                                                              |
 |------------------------------------------------|----------------------------------------------------------------------------|
 | Page loads very slowly, then works             | Render was asleep. Normal on the free plan.                                |
-| `"stage": "loading_model"` for minutes         | Still starting. Check Render -> Logs; send me the last ~30 lines.          |
+| `"stage":"loading_model"`, `uptime_seconds` small | Normal cold start. Refresh after ~15s.                                  |
+| `"stuck": true` (and `stage_seconds` 60+)      | Really stuck. Copy the whole /health page (it contains `stuck_trace`) and send it. |
 | `"stage": "error"`                             | Read `last_error` in the same page.                                        |
 | `"slots_loaded": 0`                            | `backend/slots.json` is missing from the repo.                             |
-| Render says "out of memory" / keeps restarting | Should not happen (app uses ~180 MB of 512 MB). Send me the log.           |
+| Render says "out of memory" / keeps restarting | App peaks around 240 MB of the 512 MB free limit. Send me the log.         |
 | Dashboard cards show 0                         | Wrong `NEXT_PUBLIC_API_URL`, or you did not redeploy Vercel after setting it.|
 | Dashboard works but is slow/choppy             | Render -> Environment: add `DETECT_INTERVAL=1.0` and `STREAM_FPS=5`.       |
 

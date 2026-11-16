@@ -9,5 +9,5 @@ services:
     buildCommand: pip install -r requirements.txt
     # Keep --workers 1 (detector + stats live in one process); threads let several
     # browsers watch the video stream while /api/stats keeps answering.
-    startCommand: gunicorn app:app --workers 1 --threads 16 --timeout 120
+    startCommand: gunicorn app:app --workers 1 --threads 16 --timeout 120 --bind 0.0.0.0:$PORT
     healthCheckPath: /health

@@ -54,7 +54,7 @@ npm run dev                       # http://localhost:3000
 | `GET /api/slots` | `[{"id": "P1", "zone": "Back Left", "occupied": true}, ...]` |
 | `GET /api/history?points=120` | Recorded occupancy over time, oldest first: `[{"t": <unix seconds>, "occupied", "available", "occupancy_rate"}, ...]` |
 | `GET /api/insights` | Peak time, average occupancy, trend (`collecting`/`increasing`/`decreasing`/`stable`) and rule-based alerts, all computed from the recorded history |
-| `GET /health` | Always HTTP 200. `status`, `stage` (`loading_model` → `opening_video` → `running`), `slots_loaded`, `detections_run`, `last_error` |
+| `GET /health` | Always HTTP 200. `status`, `stage` (`loading_model` → `warming_up` → `opening_video` → `running`), `stage_seconds`, `uptime_seconds`, `slots_loaded`, `detections_run`, `restarts`, `last_error`, `cpu`, and — if a startup stage takes over a minute — `stuck: true` plus `stuck_trace` showing the exact line it stopped on |
 
 ## Deploy
 
@@ -64,12 +64,14 @@ npm run dev                       # http://localhost:3000
 |---|---|
 | Root Directory | `backend` |
 | Build Command | `pip install -r requirements.txt` |
-| Start Command | `gunicorn app:app --workers 1 --threads 16 --timeout 120` |
+| Start Command | `gunicorn app:app --workers 1 --threads 16 --timeout 120 --bind 0.0.0.0:$PORT` |
 | Health Check Path | `/health` |
 
 (or use `render.yaml` as a Blueprint). Keep `--workers 1`; more threads are fine, since every open
-video stream uses one. The app needs roughly 180 MB of RAM, so Render's free 512 MB plan is enough.
-Free instances sleep when idle and take a minute or more to wake up.
+video stream uses one. The app peaks at about 240 MB of RAM, so Render's free 512 MB plan is enough,
+though not by a huge margin. Free instances sleep when idle, and `/health` answers while the app is
+still starting — so a freshly woken service shows `stage: loading_model` for the first few seconds.
+Check `uptime_seconds` before assuming it is stuck.
 
 **Frontend on Vercel** — import the repo, set **Root Directory** to `frontend`, add the environment
 variable `NEXT_PUBLIC_API_URL` = your Render URL (https, no trailing slash), then deploy. Redeploy
@@ -84,7 +86,9 @@ after changing the variable; it is read at build time.
 | `STREAM_FPS` | `15` | Video frames per second sent to browsers |
 | `DEBOUNCE_DETECTIONS` | `5` | Detections in a row before a slot changes state (reduces flicker) |
 | `SLOT_IOU_THRESHOLD` | `0.4` | How much a car must overlap a slot to count |
-| `ORT_THREADS` | `2` | CPU threads for the model |
+| `ORT_THREADS` | `1` | CPU threads for the model (raise on a bigger machine) |
+| `CV_THREADS` | `1` | CPU threads for OpenCV |
+| `STUCK_AFTER` | `60` | Seconds before a stalled startup stage is reported in `/health` |
 | `HISTORY_INTERVAL` | `5` | Seconds between recorded history points |
 | `HISTORY_MAX_POINTS` | `720` | History points kept (720 x 5 s = the last hour) |
 

@@ -17,6 +17,7 @@ Slot positions live in `slots.json` (created by `python calibrate_slots.py`).
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 import cv2
@@ -39,8 +40,9 @@ VEHICLE_CLASSES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 # so ~0.10 is normal for it. If you change this, re-run `python calibrate_slots.py`
 # with the same value, because the slots are derived from what the model detects.
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.10"))
-# CPU threads used by the model (more = faster, but more CPU on small servers)
-ORT_THREADS = int(os.getenv("ORT_THREADS", "2"))
+# CPU threads used by the model. 1 suits small/free servers (more threads on a tiny
+# CPU slice just fight each other). Raise it on a bigger machine.
+ORT_THREADS = int(os.getenv("ORT_THREADS", "1"))
 # A vehicle "belongs" to a slot when their boxes overlap at least this much (IoU)
 SLOT_IOU_THRESHOLD = float(os.getenv("SLOT_IOU_THRESHOLD", "0.4"))
 # A slot must show a new state this many detections in a row before it flips.
@@ -110,7 +112,19 @@ class ParkingDetector:
         opts.intra_op_num_threads = ORT_THREADS
         opts.inter_op_num_threads = 1
         opts.log_severity_level = 3          # warnings/errors only
+        # Don't let idle model threads busy-wait: on a tiny CPU slice that burns the
+        # little time we have and can stall startup.
+        opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
+        if not os.path.exists(MODEL_PATH):
+            raise FileNotFoundError(
+                f"Model file missing: {MODEL_PATH}. It should be committed to the repo "
+                f"at backend/models/. Check it was pushed to GitHub.")
+        t0 = time.monotonic()
+        log.info("Creating ONNX session (%d thread(s)) from %s (%.1f MB)...",
+                 ORT_THREADS, MODEL_PATH, os.path.getsize(MODEL_PATH) / 1e6)
         self.session = ort.InferenceSession(MODEL_PATH, opts, providers=["CPUExecutionProvider"])
+        log.info("ONNX session created in %.1fs", time.monotonic() - t0)
         inp = self.session.get_inputs()[0]
         self._input_name = inp.name
         self._in_h, self._in_w = int(inp.shape[2]), int(inp.shape[3])   # 384 x 640 for the bundled model
