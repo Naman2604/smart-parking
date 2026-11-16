@@ -1,0 +1,8 @@
+flask>=3.0
+flask-cors>=4.0
+gunicorn>=22.0
+numpy
+# "headless" = no GUI libraries; avoids the `libGL.so.1` import error on servers (Render, Docker, ...)
+opencv-python-headless
+# Runs the YOLO26 model (models/yolo26n.onnx) without PyTorch -> small enough for 512 MB servers
+onnxruntime

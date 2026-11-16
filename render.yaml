@@ -1,0 +1,13 @@
+# Optional: lets Render create the backend service from this file ("New > Blueprint").
+# You can also create the service by hand with the same settings (see README).
+services:
+  - type: web
+    name: smart-parking-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # Keep --workers 1 (detector + stats live in one process); threads let several
+    # browsers watch the video stream while /api/stats keeps answering.
+    startCommand: gunicorn app:app --workers 1 --threads 16 --timeout 120
+    healthCheckPath: /health
