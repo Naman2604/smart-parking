@@ -21,37 +21,6 @@ import os
 for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
              "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
     os.environ.setdefault(_var, "1")
-
-import logging
-import sys
-import threading
-import time
-import traceback
-
-import cv2
-from flask import Flask, Response, jsonify, request
-from flask_cors import CORS
-
-from analytics import (HISTORY_MAX_POINTS, get_history, get_insights, get_slots,
-                       get_stats, set_zones, update_stats)
-from detection import BASE_DIR, ParkingDetector
-
-cv2.setNumThreads(int(os.getenv("CV_THREADS", "1")))
-START_TIME = time.time()
-
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-log = logging.getLogger("parking.app")
-
-VIDEO_PATH = os.getenv("VIDEO_PATH", str(BASE_DIR / "parking.mp4"))
-STREAM_FPS = float(os.getenv("STREAM_FPS", "15"))            # frames sent to browsers per second
-DETECT_INTERVAL = float(os.getenv("DETECT_INTERVAL", "0.3"))  # seconds between YOLO runs
-JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "70"))
-# If a startup stage takes longer than this, record where the thread is stuck so
-# /health can show it (useful when you can't read the server's logs).
-STUCK_AFTER = float(os.getenv("STUCK_AFTER", "60"))
-
-
 def cpu_report():
     """What the container says about CPUs, and the real quota if there is one."""
     info = {"cpus_visible": os.cpu_count()}
@@ -83,19 +52,48 @@ def cpu_report():
 
 
 # Free/small instances often allow only a fraction of one CPU core while reporting
-# many. Detecting 3x a second and streaming 15 fps is then far more work than the
-# machine can do, so pick gentler settings automatically. Anything set explicitly
-# as an environment variable always wins.
+# many. The normal settings then ask for several times more work than the machine can
+# do, so choose gentler ones. This must happen before `detection` is imported, because
+# that module reads its own settings from the environment. Anything you set yourself wins.
 CPU_QUOTA = cpu_report().get("cpu_quota_cores")
 LOW_CPU = bool(CPU_QUOTA and CPU_QUOTA < 0.5)
 if LOW_CPU:
-    if "DETECT_INTERVAL" not in os.environ:
-        DETECT_INTERVAL = 1.5
-    if "STREAM_FPS" not in os.environ:
-        STREAM_FPS = 4.0
-    if "JPEG_QUALITY" not in os.environ:
-        JPEG_QUALITY = 60
-    log.info("Small CPU allowance (%.2f cores): using detect every %.1fs, %.0f fps stream.",
+    os.environ.setdefault("DETECT_INTERVAL", "3.0")   # detect every 3s instead of 0.3s
+    os.environ.setdefault("STREAM_FPS", "4")
+    os.environ.setdefault("JPEG_QUALITY", "60")
+    # Fewer repeats before a slot may change, so a change still shows within ~6s
+    os.environ.setdefault("DEBOUNCE_DETECTIONS", "2")
+
+import logging
+import sys
+import threading
+import time
+import traceback
+
+import cv2
+from flask import Flask, Response, jsonify, request
+from flask_cors import CORS
+
+from analytics import (HISTORY_MAX_POINTS, get_history, get_insights, get_slots,
+                       get_stats, set_zones, update_stats)
+from detection import BASE_DIR, ParkingDetector
+
+cv2.setNumThreads(int(os.getenv("CV_THREADS", "1")))
+START_TIME = time.time()
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("parking.app")
+
+VIDEO_PATH = os.getenv("VIDEO_PATH", str(BASE_DIR / "parking.mp4"))
+STREAM_FPS = float(os.getenv("STREAM_FPS", "15"))            # frames sent to browsers per second
+DETECT_INTERVAL = float(os.getenv("DETECT_INTERVAL", "0.3"))  # seconds between YOLO runs
+JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "70"))
+# If a startup stage takes longer than this, record where the thread is stuck so
+# /health can show it (useful when you can't read the server's logs).
+STUCK_AFTER = float(os.getenv("STUCK_AFTER", "60"))
+if LOW_CPU:
+    log.info("Small CPU allowance (%.2f cores): detecting every %.1fs, %.0f fps stream.",
              CPU_QUOTA, DETECT_INTERVAL, STREAM_FPS)
 
 

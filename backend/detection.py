@@ -29,7 +29,11 @@ log = logging.getLogger("parking.detection")
 BASE_DIR = Path(__file__).resolve().parent
 
 # ── Settings (override with environment variables if you like) ──────────────
-MODEL_PATH = os.getenv("YOLO_MODEL", str(BASE_DIR / "models" / "yolo26n.onnx"))
+# Two models are bundled. The default (960) is a good balance; the 1280 one spots
+# more distant cars but uses roughly 100 MB more memory. To use it, set BOTH:
+#   YOLO_MODEL=models/yolo26n-1280.onnx  and  SLOTS_FILE=slots-1280.json
+# (the slots must come from the same model, because they are learned from what it sees)
+MODEL_PATH = os.getenv("YOLO_MODEL", str(BASE_DIR / "models" / "yolo26n-960.onnx"))
 SLOTS_PATH = Path(os.getenv("SLOTS_FILE", str(BASE_DIR / "slots.json")))
 
 # COCO class IDs for vehicles

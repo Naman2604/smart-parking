@@ -75,7 +75,7 @@ Open http://localhost:3000
    what starts the detection worker, so the first thing you see is almost always:
        "stage":"loading_model", "slots_loaded":0, "detections_run":0
    That is normal. **Refresh once after ~10 seconds.** You should then get
-   "stage":"running", "status":"ok", "slots_loaded":32.
+   "stage":"running", "status":"ok", "slots_loaded":37.
 
    If it still says loading_model after a minute, look at `stage_seconds` and `stuck`. When
    `"stuck":true` the page also contains `stuck_trace`, naming the exact line it stopped on.
@@ -95,7 +95,7 @@ add `PYTHON_VERSION` = `3.12.3`, then redeploy. (The project was tested on Pytho
    (If you change the variable later you MUST redeploy: Deployments -> ... -> Redeploy.)
 
 ## Step 6 - Check that it works
-On the dashboard you should see: real numbers in the four cards (about 32 total slots), the video with
+On the dashboard you should see: real numbers in the four cards (37 total slots), the video with
 boxes, a grid of 32 slots, header "System Active" and "1/1 Camera Online". The usage chart and insights
 fill in over the first minute.
 
@@ -112,7 +112,7 @@ Open  https://YOUR-SERVICE.onrender.com/health  first:
 | `"stuck": true` (and `stage_seconds` 60+)      | Really stuck. Copy the whole /health page (it contains `stuck_trace`) and send it. |
 | `"stage": "error"`                             | Read `last_error` in the same page.                                        |
 | `"slots_loaded": 0`                            | `backend/slots.json` is missing from the repo.                             |
-| Render says "out of memory" / keeps restarting | App peaks around 240 MB of the 512 MB free limit. Send me the log.         |
+| Render says "out of memory" / keeps restarting | App peaks around 330 MB of the 512 MB free limit. Send me the log.             |
 | Dashboard cards show 0                         | Wrong `NEXT_PUBLIC_API_URL`, or you did not redeploy Vercel after setting it.|
 | Dashboard works but is slow/choppy             | Render -> Environment: add `DETECT_INTERVAL=1.0` and `STREAM_FPS=5`.       |
 

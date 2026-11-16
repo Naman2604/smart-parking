@@ -19,7 +19,9 @@ backend/
   analytics.py         Thread-safe stats shared by the thread and the API
   calibrate_slots.py   Finds the parking slots in a video -> slots.json
   slots.json           Slot rectangles + the video frame range they apply to
-  models/yolo26n.onnx  YOLO26 nano, exported NMS-free, 384x640 input
+  models/yolo26n-960.onnx   YOLO26 nano, NMS-free, 576x960 input (default)
+  models/yolo26n-1280.onnx  Same model at 768x1280 - spots more distant cars, ~100 MB more RAM
+  slots-1280.json           Slots calibrated for the 1280 model (43 instead of 37)
   parking.mp4          Sample footage
   requirements.txt
 frontend/              Next.js dashboard (cards, video panel, slot grid, charts, insights)
@@ -72,7 +74,7 @@ so that first response shows `stage: loading_model`. Request it again a few seco
 
 (or use `render.yaml` as a Blueprint). Keep `--workers 1`; more threads are fine, since every open
 video stream uses one. The app peaks at about 240 MB of RAM, so Render's free 512 MB plan is enough,
-though not by a huge margin. Free instances sleep when idle, and `/health` answers while the app is
+though not by a huge margin (about 330 MB of 512 MB). Free instances sleep when idle, and `/health` answers while the app is
 still starting — so a freshly woken service shows `stage: loading_model` for the first few seconds.
 Check `uptime_seconds` before assuming it is stuck.
 
@@ -96,11 +98,31 @@ after changing the variable; it is read at build time.
 | `HISTORY_INTERVAL` | `5` | Seconds between recorded history points |
 | `HISTORY_MAX_POINTS` | `720` | History points kept (720 x 5 s = the last hour) |
 
+**Detection accuracy.** The model runs the video (640x360) at a larger input size, which is what
+lets it pick out cars parked further from the camera. Two sizes are bundled:
+
+| Model | Slots found | Peak RAM | Notes |
+|---|---|---|---|
+| `yolo26n-960.onnx` (default) | 37 | ~330 MB | Safe on a 512 MB free instance |
+| `yolo26n-1280.onnx` | 43 | ~430 MB | Better on distant cars; close to the 512 MB limit |
+
+To switch, set **both** environment variables, because slots are learned from what a given model
+sees and the two sets are not interchangeable:
+
+```
+YOLO_MODEL=models/yolo26n-1280.onnx
+SLOTS_FILE=slots-1280.json
+```
+
+Cars parked where no slot was ever calibrated are outlined in blue rather than counted. Rows of the
+lot that were empty for the whole calibration video get no slots at all, which is why the count is
+37 rather than the lot's full capacity.
+
 **Small-CPU mode.** Free instances often allow only a fraction of one core (Render's free plan
 gives about 0.15) while reporting 8 CPUs. When the app detects an allowance under half a core it
-automatically detects once every 1.5 s and streams 4 fps instead of 0.3 s and 15 fps, because the
-defaults ask for several times more work than such a machine can do. `/health` shows this as
-`low_cpu_mode: true`. Any value you set yourself as an environment variable always wins.
+automatically detects once every 3 s and streams 4 fps instead of 0.3 s and 15 fps, and needs a
+change confirmed twice instead of five times so updates still appear within about 6 seconds.
+`/health` shows this as `low_cpu_mode: true`. Any value you set yourself always wins.
 
 ## Using your own video
 
