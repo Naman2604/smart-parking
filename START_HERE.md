@@ -71,17 +71,15 @@ Open http://localhost:3000
 3. Click **Create Web Service**. The first build takes a few minutes.
 4. When it says "Live", open  https://YOUR-SERVICE.onrender.com/health
 
-   IMPORTANT - how to read this page. A free Render instance goes to sleep when nobody uses it.
-   Opening /health wakes it, and the page answers *while the app is still starting*, so the FIRST
-   thing you see is almost always:
+   IMPORTANT - how to read this page. The FIRST request to a sleeping or just-deployed server is
+   what starts the detection worker, so the first thing you see is almost always:
        "stage":"loading_model", "slots_loaded":0, "detections_run":0
-   That is normal. **Wait ~15 seconds and refresh.** Look at these two numbers:
+   That is normal. **Refresh once after ~10 seconds.** You should then get
+   "stage":"running", "status":"ok", "slots_loaded":32.
 
-   - `uptime_seconds` small (0-20) -> the app just woke up. Keep refreshing; it should reach
-     "stage":"running", "status":"ok", "slots_loaded":32 within a few seconds.
-   - `stage_seconds` large (60+) and `"stuck":true` -> it really is stuck. The page then also
-     contains `stuck_trace`, which says exactly which line it stopped on. Copy the whole page
-     and send it to me - that tells me the cause without needing the Render logs.
+   If it still says loading_model after a minute, look at `stage_seconds` and `stuck`. When
+   `"stuck":true` the page also contains `stuck_trace`, naming the exact line it stopped on.
+   Copy the whole page and send it - that identifies the cause without the Render logs.
 5. Copy your service URL (https://YOUR-SERVICE.onrender.com) - you need it in Step 5.
 
 If the build fails with a Python/numpy/onnxruntime error: Render -> your service -> **Environment** ->
@@ -110,7 +108,7 @@ Open  https://YOUR-SERVICE.onrender.com/health  first:
 | What you see                                   | Meaning / fix                                                              |
 |------------------------------------------------|----------------------------------------------------------------------------|
 | Page loads very slowly, then works             | Render was asleep. Normal on the free plan.                                |
-| `"stage":"loading_model"`, `uptime_seconds` small | Normal cold start. Refresh after ~15s.                                  |
+| `"stage":"loading_model"` on the first load     | Normal - the first request starts the worker. Refresh after ~10s.          |
 | `"stuck": true` (and `stage_seconds` 60+)      | Really stuck. Copy the whole /health page (it contains `stuck_trace`) and send it. |
 | `"stage": "error"`                             | Read `last_error` in the same page.                                        |
 | `"slots_loaded": 0`                            | `backend/slots.json` is missing from the repo.                             |

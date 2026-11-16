@@ -55,6 +55,13 @@ STUCK_AFTER = float(os.getenv("STUCK_AFTER", "60"))
 def cpu_report():
     """What the container says about CPUs, and the real quota if there is one."""
     info = {"cpus_visible": os.cpu_count()}
+    override = os.getenv("CPU_QUOTA_CORES")
+    if override:                      # manual override if auto-detection fails
+        try:
+            info["cpu_quota_cores"] = float(override)
+            return info
+        except ValueError:
+            pass
     try:
         info["cpus_usable"] = len(os.sched_getaffinity(0))
     except (AttributeError, OSError):
@@ -73,6 +80,23 @@ def cpu_report():
         except (OSError, ValueError, IndexError, ZeroDivisionError):
             continue
     return info
+
+
+# Free/small instances often allow only a fraction of one CPU core while reporting
+# many. Detecting 3x a second and streaming 15 fps is then far more work than the
+# machine can do, so pick gentler settings automatically. Anything set explicitly
+# as an environment variable always wins.
+CPU_QUOTA = cpu_report().get("cpu_quota_cores")
+LOW_CPU = bool(CPU_QUOTA and CPU_QUOTA < 0.5)
+if LOW_CPU:
+    if "DETECT_INTERVAL" not in os.environ:
+        DETECT_INTERVAL = 1.5
+    if "STREAM_FPS" not in os.environ:
+        STREAM_FPS = 4.0
+    if "JPEG_QUALITY" not in os.environ:
+        JPEG_QUALITY = 60
+    log.info("Small CPU allowance (%.2f cores): using detect every %.1fs, %.0f fps stream.",
+             CPU_QUOTA, DETECT_INTERVAL, STREAM_FPS)
 
 
 class FrameProducer(threading.Thread):
@@ -215,27 +239,55 @@ class FrameProducer(threading.Thread):
 app = Flask(__name__)
 CORS(app)
 
-producer = FrameProducer()
-producer.start()
-
-
-def _watchdog():
+def _watchdog(prod):
     """
     If startup stalls, record where the worker thread is stuck so it shows up in
     /health. Free hosting often gives no log access, so the page has to explain itself.
     """
     while True:
         time.sleep(5)
-        if producer.stage not in ("running", "error") and producer.stage_seconds() > STUCK_AFTER:
-            if producer.stuck_trace is None:
-                producer.stuck_trace = producer.capture_stack()
+        if prod.stage not in ("running", "error") and prod.stage_seconds() > STUCK_AFTER:
+            if prod.stuck_trace is None:
+                prod.stuck_trace = prod.capture_stack() or ["(stack unavailable)"]
                 log.warning("Still in stage '%s' after %.0fs. Thread is here:\n%s",
-                            producer.stage, producer.stage_seconds(),
-                            "\n".join(producer.stuck_trace or ["(stack unavailable)"]))
+                            prod.stage, prod.stage_seconds(), "\n".join(prod.stuck_trace))
 
 
-threading.Thread(target=_watchdog, daemon=True, name="watchdog").start()
-log.info("Startup: %s", cpu_report())
+# The worker threads are started lazily, NOT at import time.
+#
+# Why: some servers import this module and only then fork the process that serves
+# requests (gunicorn --preload, and some hosts' defaults). Threads do not survive a
+# fork - they keep running in the parent, while the child that answers requests has
+# none. The symptom is an app frozen at the first stage forever, with no error.
+# Starting on the first request means the threads always live in the process that
+# serves it, and a thread that dies for any reason is replaced.
+_producer = None
+_producer_pid = None
+_start_lock = threading.Lock()
+
+
+def get_producer():
+    """The frame producer belonging to THIS process, starting it if needed."""
+    global _producer, _producer_pid
+    pid = os.getpid()
+    if _producer is not None and _producer_pid == pid and _producer.is_alive():
+        return _producer
+    with _start_lock:
+        if _producer is None or _producer_pid != pid or not _producer.is_alive():
+            if _producer is not None:
+                log.warning("Worker thread missing in pid %s (fork or crash) - starting a new one", pid)
+            _producer = FrameProducer()
+            _producer.start()
+            _producer_pid = pid
+            threading.Thread(target=_watchdog, args=(_producer,), daemon=True,
+                             name="watchdog").start()
+            log.info("Worker threads started in pid %s. CPU: %s", pid, cpu_report())
+    return _producer
+
+
+@app.before_request
+def _ensure_running():
+    get_producer()
 
 
 @app.after_request
@@ -245,6 +297,7 @@ def no_cache(resp):
 
 
 def mjpeg_stream():
+    producer = get_producer()
     last_id = -1
     while True:
         frame_id, jpeg = producer.wait_for_frame(last_id)
@@ -293,6 +346,7 @@ def api_insights():
 @app.route("/health")
 def health():
     """Always 200 so hosting health checks don't kill the app while the model loads."""
+    producer = get_producer()
     age = None if producer.last_frame_time is None else round(time.time() - producer.last_frame_time, 1)
     ok = producer.is_alive() and producer.video_open and age is not None and age < 10
     return jsonify(status="ok" if ok else "starting_or_degraded",
@@ -303,7 +357,12 @@ def health():
                    stuck_trace=producer.stuck_trace,
                    restarts=producer.restarts,
                    cpu=cpu_report(),
+                   low_cpu_mode=LOW_CPU,
+                   detect_interval=DETECT_INTERVAL,
+                   stream_fps=STREAM_FPS,
                    video_open=producer.video_open,
+                   worker_pid=os.getpid(),
+                   thread_alive=producer.is_alive(),
                    seconds_since_last_frame=age,
                    detections_run=producer.detections_run,
                    slots_loaded=producer.slot_count,

@@ -54,7 +54,10 @@ npm run dev                       # http://localhost:3000
 | `GET /api/slots` | `[{"id": "P1", "zone": "Back Left", "occupied": true}, ...]` |
 | `GET /api/history?points=120` | Recorded occupancy over time, oldest first: `[{"t": <unix seconds>, "occupied", "available", "occupancy_rate"}, ...]` |
 | `GET /api/insights` | Peak time, average occupancy, trend (`collecting`/`increasing`/`decreasing`/`stable`) and rule-based alerts, all computed from the recorded history |
-| `GET /health` | Always HTTP 200. `status`, `stage` (`loading_model` → `warming_up` → `opening_video` → `running`), `stage_seconds`, `uptime_seconds`, `slots_loaded`, `detections_run`, `restarts`, `last_error`, `cpu`, and — if a startup stage takes over a minute — `stuck: true` plus `stuck_trace` showing the exact line it stopped on |
+| `GET /health` | Always HTTP 200. `status`, `stage` (`loading_model` → `warming_up` → `opening_video` → `running`), `stage_seconds`, `uptime_seconds`, `slots_loaded`, `detections_run`, `restarts`, `thread_alive`, `worker_pid`, `last_error`, `cpu`, `low_cpu_mode`, and — if a startup stage takes over a minute — `stuck: true` plus `stuck_trace` showing the exact line it stopped on |
+
+The very first request to a freshly started server is what starts the background worker,
+so that first response shows `stage: loading_model`. Request it again a few seconds later.
 
 ## Deploy
 
@@ -87,12 +90,17 @@ after changing the variable; it is read at build time.
 | `DEBOUNCE_DETECTIONS` | `5` | Detections in a row before a slot changes state (reduces flicker) |
 | `SLOT_IOU_THRESHOLD` | `0.4` | How much a car must overlap a slot to count |
 | `ORT_THREADS` | `1` | CPU threads for the model (raise on a bigger machine) |
+| `CPU_QUOTA_CORES` | auto | Override the detected CPU allowance if auto-detection fails |
 | `CV_THREADS` | `1` | CPU threads for OpenCV |
 | `STUCK_AFTER` | `60` | Seconds before a stalled startup stage is reported in `/health` |
 | `HISTORY_INTERVAL` | `5` | Seconds between recorded history points |
 | `HISTORY_MAX_POINTS` | `720` | History points kept (720 x 5 s = the last hour) |
 
-If Render is slow, set `DETECT_INTERVAL=1.0` and `STREAM_FPS=5`.
+**Small-CPU mode.** Free instances often allow only a fraction of one core (Render's free plan
+gives about 0.15) while reporting 8 CPUs. When the app detects an allowance under half a core it
+automatically detects once every 1.5 s and streams 4 fps instead of 0.3 s and 15 fps, because the
+defaults ask for several times more work than such a machine can do. `/health` shows this as
+`low_cpu_mode: true`. Any value you set yourself as an environment variable always wins.
 
 ## Using your own video
 
